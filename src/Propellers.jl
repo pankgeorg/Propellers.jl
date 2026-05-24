@@ -105,13 +105,16 @@ end
 """
     cell_count(disk, grid_size) -> Int
 
-Diagnostic: number of cells inside the disk over a domain of size
-`grid_size::NTuple{D,Int}` (matching the size of `flow.p`).
+Diagnostic: number of cells inside the disk over a domain whose **flow
+pressure array** is sized `grid_size` (i.e. pass `size(flow.p)`, not the
+constructor's `dims` — `flow.p` is `dims .+ 2` because of the WaterLily
+ghost layer). The iteration matches the `WaterLily.inside(flow.p)` rule
+the runtime force loop uses, so this number is *exactly* the divisor
+the runtime applies to `disk.thrust`.
 """
 function cell_count(disk::ActuatorDisk{T,D}, grid_size::NTuple{D,Int}) where {T,D}
     N = 0
-    for I in CartesianIndices(grid_size)
-        all(2 .≤ Tuple(I) .≤ grid_size .- 1) || continue   # `inside`
+    for I in CartesianIndices(ntuple(d -> 2:grid_size[d] - 1, D))
         x = WaterLily.loc(0, I, T)
         in_disk(disk, x) && (N += 1)
     end
