@@ -77,7 +77,34 @@ using WaterLily
         @test isapprox(total_z, 0f0; atol = 1e-6)
 
         # And the disk should have hit a positive number of cells.
-        @test cell_count(disk, dims) > 0
+        @test cell_count(disk, size(flow.p)) > 0
+    end
+
+    @testset "Thrust conservation in 2D" begin
+        # 2D analogue: same total axial force should land in flow.f[..,1].
+        dims = (48, 24)
+        uBC = (1f0, 0f0)
+        flow = WaterLily.Flow(dims, uBC; T=Float32)
+
+        cx = (dims[1] + 1) / 2
+        cy = (dims[2] + 1) / 2
+        disk = ActuatorDisk(
+            center = SVector(cx, cy),
+            axis   = SVector(1.0, 0.0),
+            R      = 4.0,
+            R_hub  = 0.5,
+            w      = 2.0,
+            thrust = 0.1,
+        )
+
+        flow.f .= 0
+        disk(flow, 0.0)
+
+        total_x = sum(@view flow.f[2:end-1, 2:end-1, 1])
+        total_y = sum(@view flow.f[2:end-1, 2:end-1, 2])
+        @test isapprox(total_x, disk.thrust; rtol = 1e-5)
+        @test isapprox(total_y, 0f0; atol = 1e-6)
+        @test cell_count(disk, size(flow.p)) > 0
     end
 
     @testset "Sign convention" begin
