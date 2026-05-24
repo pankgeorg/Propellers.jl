@@ -3,7 +3,7 @@ module Propellers
 using WaterLily
 using StaticArrays
 
-export ActuatorDisk
+export ActuatorDisk, SwirlingDisk
 
 """
     ActuatorDisk(; center, axis, R, R_hub=0, w=1, thrust)
@@ -116,6 +116,102 @@ function cell_count(disk::ActuatorDisk{T,D}, grid_size::NTuple{D,Int}) where {T,
         in_disk(disk, x) && (N += 1)
     end
     return N
+end
+
+"""
+    SwirlingDisk(; center, axis, R, R_hub=0, w=1, thrust, torque)
+
+Actuator disk with axial thrust **and** torque about `axis` — a single-pass
+surrogate for a rotating propeller without resolving the blades. Axial
+force is top-hat uniform (matches `ActuatorDisk`). Tangential force is
+linear in radius (canonical propeller-blade loading), normalised so the
+discrete sum of `r × f_θ` equals `torque`.
+
+Sign convention: positive `torque` rotates the fluid in the right-hand
+sense about `+axis`. For a real propeller this would be the sense in
+which the propeller itself spins.
+
+Only available in 3D. (2D has no meaningful axial torque.)
+"""
+struct SwirlingDisk{T,V<:SVector{3,T}}
+    center::V
+    axis::V
+    R::T
+    R_hub::T
+    w::T
+    thrust::T
+    torque::T
+end
+
+function SwirlingDisk(; center, axis, R::Real, R_hub::Real=zero(R),
+                       w::Real=one(R), thrust::Real, torque::Real)
+    @assert length(center) == 3 && length(axis) == 3 "SwirlingDisk is 3D only"
+    a = SVector{3}(float.(axis))
+    n = sqrt(sum(abs2, a))
+    @assert n > 0 "axis must be non-zero"
+    a = a ./ n
+    c = SVector{3}(float.(center))
+    T = promote_type(eltype(c), eltype(a), typeof(float(R)),
+                     typeof(float(R_hub)), typeof(float(w)),
+                     typeof(float(thrust)), typeof(float(torque)))
+    SwirlingDisk{T, SVector{3,T}}(
+        SVector{3,T}(c), SVector{3,T}(a),
+        T(R), T(R_hub), T(w), T(thrust), T(torque),
+    )
+end
+
+@inline function _disk_geometry(disk::SwirlingDisk{T}, x) where T
+    Δ = x .- disk.center
+    axial = sum(Δ .* disk.axis)
+    if abs(axial) > disk.w/2
+        return (false, zero(T), SVector{3,T}(0,0,0))
+    end
+    r_vec = Δ .- axial .* disk.axis
+    r² = sum(abs2, r_vec)
+    if r² < disk.R_hub^2 || r² > disk.R^2
+        return (false, zero(T), SVector{3,T}(0,0,0))
+    end
+    r = sqrt(r²)
+    # Tangential unit vector = axis × r̂. If r is too small (hub center),
+    # tangential direction is undefined — set to zero.
+    if r < eps(T)
+        return (true, r, SVector{3,T}(0,0,0))
+    end
+    r_hat = r_vec ./ r
+    t_vec = SVector{3,T}(
+        disk.axis[2]*r_hat[3] - disk.axis[3]*r_hat[2],
+        disk.axis[3]*r_hat[1] - disk.axis[1]*r_hat[3],
+        disk.axis[1]*r_hat[2] - disk.axis[2]*r_hat[1],
+    )
+    return (true, r, t_vec)
+end
+
+function (disk::SwirlingDisk{T})(flow, t; kwargs...) where T
+    Tf = eltype(flow.f)
+    # First pass: count cells, sum r² for torque normalisation.
+    N = 0
+    sum_r² = zero(Tf)
+    for I in WaterLily.inside(flow.p)
+        x = WaterLily.loc(0, I, Tf)
+        inside, r, _ = _disk_geometry(disk, x)
+        inside || continue
+        N += 1
+        sum_r² += r*r
+    end
+    N == 0 && return nothing
+    f_axial = Tf(disk.thrust / N)
+    K_τ = sum_r² > 0 ? Tf(disk.torque / sum_r²) : zero(Tf)
+    # Second pass: apply axial + tangential force.
+    for I in WaterLily.inside(flow.p)
+        x = WaterLily.loc(0, I, Tf)
+        inside, r, t_vec = _disk_geometry(disk, x)
+        inside || continue
+        f_tan = K_τ * r
+        @inbounds for i in 1:3
+            flow.f[I, i] += f_axial * disk.axis[i] + f_tan * t_vec[i]
+        end
+    end
+    return nothing
 end
 
 end # module
