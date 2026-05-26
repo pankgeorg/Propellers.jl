@@ -163,6 +163,15 @@ function SwirlingDisk(; center, axis, R::Real, R_hub::Real=zero(R),
     )
 end
 
+"""
+    _disk_geometry(disk, x) -> (inside::Bool, r::T, t_vec::SVector{3,T})
+
+Compute the local disk-relative geometry at world point `x`: whether
+`x` lies inside the swept annulus, the radial distance `r` from the
+axis, and the tangential unit vector `t_vec = axis × r̂` (zero at the
+hub centre). Used by the SwirlingDisk callable to apply axial + swirl
+forces.
+"""
 @inline function _disk_geometry(disk::SwirlingDisk{T}, x) where T
     Δ = x .- disk.center
     axial = sum(Δ .* disk.axis)
@@ -189,6 +198,16 @@ end
     return (true, r, t_vec)
 end
 
+"""
+    disk(flow, t)  (SwirlingDisk)
+
+`udf`-compatible call: add axial thrust + tangential swirl into
+`flow.f`. Axial force is top-hat uniform (per-cell magnitude
+`thrust / N_cells`); tangential force scales linearly with radius
+(`f_θ = K_τ · r`), with `K_τ` chosen so that `Σ r·f_θ = torque` after
+discretisation. The two passes are necessary because `K_τ` depends on
+the cell count `N` and the sum of `r²` inside the annulus.
+"""
 function (disk::SwirlingDisk{T})(flow, t; kwargs...) where T
     Tf = eltype(flow.f)
     # First pass: count cells, sum r² for torque normalisation.
