@@ -8,8 +8,154 @@
 > CFD codes. Do not rely on this for safety-critical or commercial
 > work without first validating against authoritative sources.
 
-Actuator-disk and actuator-line propeller models for [WaterLily.jl](https://github.com/WaterLily-jl/WaterLily.jl).
-WIP. See [PLAN.md](./PLAN.md) for the full design.
+Body-force propeller models for [WaterLily.jl](https://github.com/WaterLily-jl/WaterLily.jl).
+This package implements the **cheap-but-quantitative** end of the
+propeller modelling spectrum: actuator-disk and actuator-line families
+that deposit thrust (and optionally swirl) onto a Cartesian face-
+staggered force array. For *VLM-resolved* propellers, see the sibling
+[LiftingSurfaces.jl](https://github.com/pankgeorg/LiftingSurfaces.jl)
+package — it offers a `BladedRotor` that resolves individual blades at
+the cost of a per-step VLM solve.
 
-Cheap, well-validated body-force models that stand in for blade-resolved
-propellers in ship-CFD studies.
+The package is part of an eight-package stack:
+
+| Package | Role |
+|---|---|
+| WaterLily | Cartesian NS + BDIM substrate |
+| Turbulence.jl | LES sub-grid (Smagorinsky, WALE) |
+| VoF.jl | MULES free-surface |
+| ShipShapes.jl | Hull SDFs |
+| **Propellers.jl** | **Actuator-disk family — this repo** |
+| LiftingSurfaces.jl | VLM-resolved rudder + rotor |
+| ShipFlow.jl | Integration scripts |
+| ShipMakie.jl | Makie plot recipes |
+
+## Quick start
+
+```julia
+using WaterLily, Propellers
+using StaticArrays: SVector
+
+dims = (192, 64, 32)
+sim  = Simulation(dims, (1f0, 0f0, 0f0), 32f0; T=Float32)
+
+# Uniform actuator-disk: constant axial body force on an annular region.
+disk = ActuatorDisk(;
+    center = SVector(64f0, 32f0, 16f0),
+    axis   = SVector(1f0,  0f0,  0f0),
+    R      = 4f0,  R_hub = 1f0,
+    w      = 2f0,           # disk axial thickness (cells)
+    thrust = 50f0,          # total integrated thrust (force units)
+)
+
+# Hook it in as a UDF — it adds force to flow.f every step.
+sim_step!(sim; udf=disk)
+```
+
+```julia
+# Add swirl (azimuthal force) to capture the rotational signature of
+# a real propeller race — a finite torque is deposited in addition to
+# axial thrust.
+swirl = SwirlingDisk(;
+    center = SVector(64f0, 32f0, 16f0),
+    axis   = SVector(1f0,  0f0,  0f0),
+    R      = 4f0,  R_hub = 1f0,
+    w      = 2f0,
+    thrust = 50f0,
+    torque = 6f0,
+)
+sim_step!(sim; udf=swirl)
+```
+
+The two disk types share the geometric kernel but differ in what they
+deposit:
+
+| Type | Deposits | Use when |
+|---|---|---|
+| `ActuatorDisk` | uniform axial thrust over annulus | scoping, no rotational effects needed |
+| `SwirlingDisk` | axial thrust + azimuthal torque distributed linearly with r | quantitative wake fraction, rudder behind propeller |
+
+## WaterLily coupling
+
+Both disks are callable as `(disk)(flow, t; kwargs...)` — pass them
+directly as the `udf` to `sim_step!`. The kernel:
+
+1. Iterates only the cells inside the disk annulus (axial extent
+   `±w/2` around `center`, radial `R_hub ≤ r ≤ R`).
+2. Computes per-cell weights so the integrated body force exactly
+   equals the input `thrust` (and `torque`, for `SwirlingDisk`).
+3. Deposits onto `flow.f[I, d]` at the appropriate face index, so the
+   action lands directly on WaterLily's momentum equation.
+
+To compose with VoF + LES, place the disk-UDF after the turbulence
+model in a `combo_udf`:
+
+```julia
+function combo_udf(flow, t; kwargs...)
+    turb(flow, t; ν₀_field=vof.ν, kwargs...)
+    disk(flow, t; kwargs...)
+    return nothing
+end
+```
+
+## Implemented
+
+| Model | Status | Test | Notes |
+|---|---|---|---|
+| `ActuatorDisk` | ✅ | `test/test_actuator_disk.jl` | uniform thrust |
+| `SwirlingDisk` | ✅ | `test/test_swirling_disk.jl` | + torque/swirl |
+| Goldstein-corrected line | ⛔ | — | not implemented |
+| Body-force-method (BFM) blade-element | ⛔ | — | use `LiftingSurfaces.BladedRotor` |
+
+## Limitations
+
+- **No blade-passage frequency.** These are steady time-averaged
+  deposition kernels; they don't reproduce the unsteady ω·t harmonic
+  content of a real rotor. If you need the AC component, see
+  `LiftingSurfaces.BladedRotor`.
+- **No cavitation model.** Pressure drop on the disk plane is a
+  by-product of the body-force balance but is not checked against a
+  cavitation threshold.
+- **`thrust` is an input, not a function of inflow.** These are
+  prescribed-force disks. For a thrust-vs-J relation derived from
+  blade geometry, see `LiftingSurfaces.rotor_forces`.
+- **No spanwise loading variation.** `ActuatorDisk` is uniform;
+  `SwirlingDisk` has linear-with-r torque deposition only. Both are
+  much cruder than blade-element theory.
+
+## When to pick which propeller model
+
+```
+                    Quantitative thrust   Two-way coupling   Cost per step
+ActuatorDisk        ❌  (prescribed)      ❌  (prescribed)    ~negligible
+SwirlingDisk        ❌  (prescribed)      ❌  (prescribed)    ~negligible
+LiftingSurfaces
+  .BladedRotor      ✅  (VLM-derived)     ✅  (trilinear_inflow) ~10–150 ms
+```
+
+For a Wigley/containership self-propulsion sweep at typical loadings
+(CT ≤ 4), `SwirlingDisk` gives the right ballpark of thrust and a
+plausible wake fraction at near-zero cost. For studies where the
+rudder sits in the race — and the *amplification* of rudder authority
+matters — switch to `LiftingSurfaces.BladedRotor` so the rotor's
+inflow-dependent loading propagates correctly. The 4× rudder CL
+amplification reported in
+[`ShipFlow.jl/RESULTS-twoway-amplification.md`](https://github.com/pankgeorg/ShipFlow.jl/blob/main/RESULTS-twoway-amplification.md)
+is only visible with the VLM path.
+
+## Tests
+
+```bash
+julia --project=. -e 'using Pkg; Pkg.test()'
+```
+
+Current tests:
+
+- Thrust conservation: ∫f·dV across the disk equals the input thrust.
+- Torque conservation for `SwirlingDisk`.
+- Hub exclusion: zero force inside r < R_hub.
+- Disk-axis arbitrariness: thrust is correct for off-axis disks.
+
+## License
+
+MIT.
