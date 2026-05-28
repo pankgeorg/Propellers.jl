@@ -1,5 +1,7 @@
 # Propellers.jl
 
+[![CI](https://github.com/pankgeorg/Propellers.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/pankgeorg/Propellers.jl/actions/workflows/CI.yml)
+
 > **WARNING — AI-generated, NOT validated.**
 >
 > The code, documentation, and results in this repository were
