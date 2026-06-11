@@ -151,10 +151,11 @@ solver.
 
 ## Milestones
 
-| # | Goal                                                | Done when                              |
-|---|-----------------------------------------------------|----------------------------------------|
-| 1 | Uniform actuator disk passes momentum theory        | Layer 1 disk test green                |
-| 2 | Goldstein actuator disk + tip-loss                  | Layer 1 with radial variation         |
-| 3 | Actuator line in still water (single blade static)  | thrust ±5%                             |
-| 4 | Full actuator line rotating, free stream            | wake structure qualitatively correct   |
-| 5 | DTCHullProp end-to-end in ShipFlow.jl               | Layer 3 within ±15% of OpenFOAM        |
+| # | Goal                                                | Done when                              | Status (2026-06-11) |
+|---|-----------------------------------------------------|----------------------------------------|---------------------|
+| 1 | Uniform actuator disk passes momentum theory        | Layer 1 disk test green                | ✅                  |
+| — | **SwirlingDisk** (thrust + torque surrogate, unplanned) | torque normalised to machine precision; peak u_θ validated | ✅ (commit 49e05a6; `ShipFlow.jl/RESULTS-swirl.md`) |
+| 2 | Goldstein actuator disk + tip-loss                  | Layer 1 with radial variation          | ⛔ deprioritized — VLM-calibrated SwirlingDisk covers the use case (`RESULTS-bladed-vs-swirl.md`) |
+| 3 | Actuator line in still water (single blade static)  | thrust ±5%                             | ⛔ superseded by VLM `BladedRotor` in LiftingSurfaces.jl (relative effects) + NavalArchitectToolbox open-water VLM (quantitative, DTMB 4382 ~2%) |
+| 4 | Full actuator line rotating, free stream            | wake structure qualitatively correct   | ⛔ superseded (same as 3) |
+| 5 | DTCHullProp end-to-end in ShipFlow.jl               | Layer 3 within ±15% of OpenFOAM        | ⛔ blocked on DTC hull offsets (BLOCKER #1) |
