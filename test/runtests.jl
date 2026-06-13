@@ -126,4 +126,52 @@ using WaterLily
         @test isapprox(sum(@view flow.f[:,:,:,2]), 0; atol=1e-6)
     end
 
+    @testset "GradedDisk conservation + radial shape" begin
+        dims = (64, 48, 48)
+        uBC = (1f0, 0f0, 0f0)
+        flow = WaterLily.Flow(dims, uBC; T=Float32)
+        cx = (dims[1] + 1) / 2 - 1
+        cy = (dims[2] + 1) / 2 - 1
+        cz = (dims[3] + 1) / 2 - 1
+        # bell-shaped loading (zero hub & tip, peak mid-span)
+        rR = collect(0.2:0.1:1.0)
+        shapeT = @. sin(pi * (rR - 0.2) / 0.8)
+        shapeQ = 0.8 .* shapeT
+        disk = GradedDisk(
+            center = SVector(cx, cy, cz),
+            axis   = SVector(1.0, 0.0, 0.0),
+            R = 16.0, R_hub = 3.2, w = 3.0,
+            thrust = 12.5, torque = 7.3,
+            rR = rR, w_thrust = shapeT, w_torque = shapeQ,
+        )
+        flow.f .= 0
+        disk(flow, 0.0)
+        # axial thrust conserved
+        @test isapprox(sum(@view flow.f[2:end-1,2:end-1,2:end-1,1]), disk.thrust; rtol=1e-4)
+        # torque about +x conserved: Σ (y·f_z − z·f_y) about disk centre
+        Q = 0.0
+        for I in WaterLily.inside(flow.p)
+            x = WaterLily.loc(0, I, Float32)
+            y = x[2] - Float32(cy); z = x[3] - Float32(cz)
+            Q += y*flow.f[I,3] - z*flow.f[I,2]
+        end
+        @test isapprox(Q, disk.torque; rtol=1e-3)
+        # radial shape: mean axial force in a mid-span annulus should
+        # exceed that in a near-hub annulus (bell loading is mid-peaked)
+        function annulus_mean_fx(rlo, rhi)
+            s = 0.0; n = 0
+            for I in WaterLily.inside(flow.p)
+                x = WaterLily.loc(0, I, Float32)
+                ax = x[1] - Float32(cx)
+                abs(ax) > disk.w/2 && continue
+                r = sqrt((x[2]-cy)^2 + (x[3]-cz)^2)
+                if rlo ≤ r ≤ rhi && flow.f[I,1] != 0
+                    s += flow.f[I,1]; n += 1
+                end
+            end
+            n == 0 ? 0.0 : s/n
+        end
+        @test annulus_mean_fx(8.0, 12.0) > annulus_mean_fx(3.2, 5.0)
+    end
+
 end

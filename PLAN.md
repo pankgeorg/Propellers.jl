@@ -155,7 +155,7 @@ solver.
 |---|-----------------------------------------------------|----------------------------------------|---------------------|
 | 1 | Uniform actuator disk passes momentum theory        | Layer 1 disk test green                | ✅                  |
 | — | **SwirlingDisk** (thrust + torque surrogate, unplanned) | torque normalised to machine precision; peak u_θ validated | ✅ (commit 49e05a6; `ShipFlow.jl/RESULTS-swirl.md`) |
-| 2 | Goldstein actuator disk + tip-loss                  | Layer 1 with radial variation          | ⛔ deprioritized — VLM-calibrated SwirlingDisk covers the use case (`RESULTS-bladed-vs-swirl.md`) |
+| 2 | Goldstein actuator disk + tip-loss                  | Layer 1 with radial variation          | ✅ via **`GradedDisk`** — a radially-graded actuator disk that carries a tabulated dT/dr, dQ/dr loading shape with exact discrete thrust+torque conservation. Driven by the validated DTMB-4382 VLM radial loading, it round-trips KT/KQ/η within the ±10 % Phase-3 gate (ShipFlow.jl `RESULTS-propeller-layer2.md`, Ladder 2). Not Glauert/Goldstein's analytic correction per se, but the general radial-loading carrier that supersedes the need for it here. |
 | 3 | Actuator line in still water (single blade static)  | thrust ±5%                             | ⛔ superseded by VLM `BladedRotor` in LiftingSurfaces.jl (relative effects) + NavalArchitectToolbox open-water VLM (quantitative, DTMB 4382 ~2%) |
 | 4 | Full actuator line rotating, free stream            | wake structure qualitatively correct   | ⛔ superseded (same as 3) |
 | 5 | DTCHullProp end-to-end in ShipFlow.jl               | Layer 3 within ±15% of OpenFOAM        | ⛔ blocked on DTC hull offsets (BLOCKER #1) |

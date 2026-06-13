@@ -3,7 +3,7 @@ module Propellers
 using WaterLily
 using StaticArrays
 
-export ActuatorDisk, SwirlingDisk
+export ActuatorDisk, SwirlingDisk, GradedDisk
 
 """
     ActuatorDisk(; center, axis, R, R_hub=0, w=1, thrust)
@@ -230,6 +230,137 @@ function (disk::SwirlingDisk{T})(flow, t; kwargs...) where T
         inside || continue
         f_tan = K_τ * r
         @inbounds for i in 1:3
+            flow.f[I, i] += f_axial * disk.axis[i] + f_tan * t_vec[i]
+        end
+    end
+    return nothing
+end
+
+# ----------------------------------------------------------------------------
+# GradedDisk — radially-graded actuator disk
+# ----------------------------------------------------------------------------
+
+"""
+    GradedDisk(; center, axis, R, R_hub=0, w=1, thrust, torque=0,
+                 rR, w_thrust, w_torque)
+
+Actuator disk whose axial thrust and tangential torque follow a
+prescribed **radial loading shape** rather than a top-hat. `rR` is a
+vector of radial stations (in `r/R`, increasing) and `w_thrust`,
+`w_torque` are the (relative) sectional loadings `dT/dr`, `dQ/dr` at
+those stations — e.g. the bell-shaped distribution from a propeller
+vortex-lattice solve. The shapes are interpolated to each cell's radius,
+then discretely normalised so that
+
+  Σ_cells f_axial            = thrust
+  Σ_cells r · f_tangential   = torque
+
+to machine precision (same exact-conservation guarantee as
+`SwirlingDisk`). The tangential force per cell is `f_θ ∝ (dQ/dr)(r)/r`
+so that its moment `r·f_θ ∝ dQ/dr` reproduces the prescribed torque
+distribution; the axial force per cell is `f_x ∝ (dT/dr)(r)`.
+
+Sign convention matches `SwirlingDisk`: positive `thrust` accelerates
+the fluid along `+axis`; positive `torque` swirls it right-handed about
+`+axis`. 3D only.
+"""
+struct GradedDisk{T,V<:SVector{3,T},Vec<:AbstractVector{T}}
+    center::V
+    axis::V
+    R::T
+    R_hub::T
+    w::T
+    thrust::T
+    torque::T
+    rR::Vec
+    w_thrust::Vec
+    w_torque::Vec
+end
+
+function GradedDisk(; center, axis, R::Real, R_hub::Real=zero(R),
+                     w::Real=one(R), thrust::Real, torque::Real=zero(thrust),
+                     rR::AbstractVector, w_thrust::AbstractVector,
+                     w_torque::AbstractVector=zero(w_thrust))
+    @assert length(center) == 3 && length(axis) == 3 "GradedDisk is 3D only"
+    @assert length(rR) == length(w_thrust) == length(w_torque) "rR/w_thrust/w_torque length mismatch"
+    a = SVector{3}(float.(axis)); n = sqrt(sum(abs2, a))
+    @assert n > 0 "axis must be non-zero"
+    a = a ./ n
+    c = SVector{3}(float.(center))
+    T = promote_type(eltype(c), eltype(a), typeof(float(R)),
+                     typeof(float(R_hub)), typeof(float(w)),
+                     typeof(float(thrust)), typeof(float(torque)),
+                     eltype(float.(rR)), eltype(float.(w_thrust)),
+                     eltype(float.(w_torque)))
+    GradedDisk{T,SVector{3,T},Vector{T}}(
+        SVector{3,T}(c), SVector{3,T}(a),
+        T(R), T(R_hub), T(w), T(thrust), T(torque),
+        T.(collect(rR)), T.(collect(w_thrust)), T.(collect(w_torque)),
+    )
+end
+
+# linear interpolation of the loading shape at radius fraction x = r/R
+@inline function _grad_interp(rR, ys, x::T) where T
+    x ≤ rR[1]   && return ys[1]
+    x ≥ rR[end] && return ys[end]
+    @inbounds for i in 1:length(rR)-1
+        if rR[i] ≤ x ≤ rR[i+1]
+            t = (x - rR[i]) / (rR[i+1] - rR[i])
+            return ys[i] + t*(ys[i+1] - ys[i])
+        end
+    end
+    return ys[end]
+end
+
+@inline function _graded_geometry(disk::GradedDisk{T}, x) where T
+    Δ = x .- disk.center
+    axial = sum(Δ .* disk.axis)
+    if abs(axial) > disk.w/2
+        return (false, zero(T), SVector{3,T}(0,0,0))
+    end
+    r_vec = Δ .- axial .* disk.axis
+    r² = sum(abs2, r_vec)
+    if r² < disk.R_hub^2 || r² > disk.R^2
+        return (false, zero(T), SVector{3,T}(0,0,0))
+    end
+    r = sqrt(r²)
+    r < eps(T) && return (true, r, SVector{3,T}(0,0,0))
+    r_hat = r_vec ./ r
+    t_vec = SVector{3,T}(
+        disk.axis[2]*r_hat[3] - disk.axis[3]*r_hat[2],
+        disk.axis[3]*r_hat[1] - disk.axis[1]*r_hat[3],
+        disk.axis[1]*r_hat[2] - disk.axis[2]*r_hat[1],
+    )
+    return (true, r, t_vec)
+end
+
+function (disk::GradedDisk{T})(flow, t; kwargs...) where T
+    Tf = eltype(flow.f)
+    # First pass: accumulate the discrete normalisers.
+    #   axial:      Σ shape_T(r)            (so f_x = thrust·shape_T/ΣT)
+    #   tangential: Σ r·(shape_Q(r)/r) = Σ shape_Q(r)   (so Σ r·f_θ = torque)
+    sumT = zero(Tf); sumQ = zero(Tf)
+    @inbounds for I in WaterLily.inside(flow.p)
+        x = WaterLily.loc(0, I, Tf)
+        inside, r, _ = _graded_geometry(disk, x)
+        inside || continue
+        xr = Tf(r / disk.R)
+        sumT += Tf(_grad_interp(disk.rR, disk.w_thrust, xr))
+        sumQ += Tf(_grad_interp(disk.rR, disk.w_torque, xr))
+    end
+    sumT == 0 && return nothing
+    kT = Tf(disk.thrust) / sumT
+    kQ = sumQ > 0 ? Tf(disk.torque) / sumQ : zero(Tf)
+    # Second pass: apply.
+    @inbounds for I in WaterLily.inside(flow.p)
+        x = WaterLily.loc(0, I, Tf)
+        inside, r, t_vec = _graded_geometry(disk, x)
+        inside || continue
+        xr = Tf(r / disk.R)
+        f_axial = kT * Tf(_grad_interp(disk.rR, disk.w_thrust, xr))
+        # f_θ chosen so r·f_θ = kQ·shape_Q(r)  ⇒  Σ r·f_θ = torque
+        f_tan = (r > eps(Tf)) ? kQ * Tf(_grad_interp(disk.rR, disk.w_torque, xr)) / r : zero(Tf)
+        for i in 1:3
             flow.f[I, i] += f_axial * disk.axis[i] + f_tan * t_vec[i]
         end
     end
