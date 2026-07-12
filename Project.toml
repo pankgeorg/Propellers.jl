@@ -15,7 +15,7 @@ WaterLily = {path = "../WaterLily"}
 [compat]
 KernelAbstractions = "0.9"
 StaticArrays = "^1.1"
-WaterLily = "1.7"
+WaterLily = "1.7, 1.8"
 julia = "1.10"
 
 [extras]
